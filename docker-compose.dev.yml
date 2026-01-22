@@ -1,0 +1,10 @@
+# Development: docker compose -f docker-compose.dev.yml up --build
+services:
+  skinnydip:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src:/app/src:ro
+    environment:
+      - NODE_ENV=development
