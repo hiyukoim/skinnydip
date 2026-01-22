@@ -29,6 +29,7 @@ A self-hosted proxy that turns [Poolsuite FM](https://poolsuite.net) into standa
 services:
   skinnydip:
     image: ghcr.io/maddox/skinnydip:latest
+    container_name: skinnydip
     ports:
       - "3000:3000"
     restart: unless-stopped
