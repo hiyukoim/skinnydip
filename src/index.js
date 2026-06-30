@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const PoolsuiteClient = require('./poolsuite');
 const Streamer = require('./streamer');
+const { configureStreamResponse } = require('./stream-response');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -128,14 +129,7 @@ app.get('/stream/:slug', (req, res) => {
     });
   }
 
-  res.setHeader('Content-Type', 'audio/mpeg');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('icy-name', `Skinnydip - ${streamer.channelName}`);
-  res.setHeader('icy-genre', 'Electronic');
-  res.setHeader('icy-br', '128');
-
-  streamer.addClient(res);
+  streamer.addClient(res, configureStreamResponse(req, res, streamer));
 });
 
 // Default stream redirects to /stream/default

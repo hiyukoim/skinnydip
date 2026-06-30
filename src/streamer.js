@@ -1,6 +1,97 @@
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
 
+const ICY_META_INTERVAL = 16000;
+const ICY_METADATA_BLOCK_SIZE = 16;
+const ICY_MAX_METADATA_BLOCKS = 255;
+const ICY_MAX_METADATA_BYTES = ICY_METADATA_BLOCK_SIZE * ICY_MAX_METADATA_BLOCKS;
+const ICY_STREAM_TITLE_PREFIX = "StreamTitle='";
+const ICY_STREAM_TITLE_SUFFIX = "';";
+
+function sanitizeIcyText(value) {
+  return String(value || '')
+    .replace(/['\r\n\0]/g, '')
+    .trim();
+}
+
+function truncateUtf8Payload(title) {
+  let truncated = title;
+
+  while (
+    Buffer.byteLength(`${ICY_STREAM_TITLE_PREFIX}${truncated}${ICY_STREAM_TITLE_SUFFIX}`, 'utf8') > ICY_MAX_METADATA_BYTES &&
+    truncated.length > 0
+  ) {
+    truncated = truncated.slice(0, -1);
+  }
+
+  return truncated;
+}
+
+function formatIcyTitle(track) {
+  if (!track?.title) return '';
+
+  const artist = sanitizeIcyText(track.artist);
+  const title = sanitizeIcyText(track.title);
+  if (!title) return '';
+
+  return truncateUtf8Payload(artist ? `${artist} - ${title}` : title);
+}
+
+function createIcyMetadataBlock(track, lastTitle) {
+  const title = formatIcyTitle(track);
+  if (!title) {
+    return { block: Buffer.from([0]), title: '' };
+  }
+
+  if (title === lastTitle) {
+    return { block: Buffer.from([0]), title: lastTitle };
+  }
+
+  // ICY StreamTitle payloads are UTF-8.
+  const payload = Buffer.from(`${ICY_STREAM_TITLE_PREFIX}${title}${ICY_STREAM_TITLE_SUFFIX}`, 'utf8');
+  const blockCount = Math.ceil(payload.length / ICY_METADATA_BLOCK_SIZE);
+  const block = Buffer.alloc(1 + (blockCount * ICY_METADATA_BLOCK_SIZE));
+  block[0] = blockCount;
+  payload.copy(block, 1);
+  return { block, title };
+}
+
+class StreamClient {
+  constructor(res, options = {}) {
+    this.res = res;
+    this.icyMetadata = options.icyMetadata === true;
+    this.metaint = options.metaint || ICY_META_INTERVAL;
+    this.bytesUntilMetadata = this.metaint;
+    this.lastTitle = null;
+  }
+
+  get writableEnded() {
+    return this.res.writableEnded;
+  }
+
+  write(chunk, getCurrentTrack) {
+    if (!this.icyMetadata) {
+      this.res.write(chunk);
+      return;
+    }
+
+    let offset = 0;
+    while (offset < chunk.length) {
+      const bytesToWrite = Math.min(this.bytesUntilMetadata, chunk.length - offset);
+      this.res.write(chunk.subarray(offset, offset + bytesToWrite));
+      offset += bytesToWrite;
+      this.bytesUntilMetadata -= bytesToWrite;
+
+      if (this.bytesUntilMetadata === 0) {
+        const { block, title } = createIcyMetadataBlock(getCurrentTrack(), this.lastTitle);
+        this.lastTitle = title;
+        this.res.write(block);
+        this.bytesUntilMetadata = this.metaint;
+      }
+    }
+  }
+}
+
 class Streamer extends EventEmitter {
   constructor(poolsuiteClient) {
     super();
@@ -25,12 +116,13 @@ class Streamer extends EventEmitter {
     }
   }
 
-  addClient(res) {
-    this.clients.add(res);
+  addClient(res, options = {}) {
+    const client = new StreamClient(res, options);
+    this.clients.add(client);
     console.log(`Client connected. Total clients: ${this.clients.size}`);
 
     res.on('close', () => {
-      this.clients.delete(res);
+      this.clients.delete(client);
       console.log(`Client disconnected. Total clients: ${this.clients.size}`);
     });
 
@@ -42,7 +134,7 @@ class Streamer extends EventEmitter {
   broadcast(chunk) {
     for (const client of this.clients) {
       if (!client.writableEnded) {
-        client.write(chunk);
+        client.write(chunk, () => this.poolsuite.getCurrentTrack());
       }
     }
   }
@@ -149,3 +241,6 @@ class Streamer extends EventEmitter {
 }
 
 module.exports = Streamer;
+module.exports.ICY_META_INTERVAL = ICY_META_INTERVAL;
+module.exports.createIcyMetadataBlock = createIcyMetadataBlock;
+module.exports.formatIcyTitle = formatIcyTitle;
